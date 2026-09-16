@@ -61,6 +61,22 @@ function Test-ListeningPort([int]$Port) {
     return $script:ListeningPorts -contains $Port
 }
 
+function Get-ProjectOwnedParentMatch([int]$ProcessId, [string]$RootPattern) {
+    # uv 托管的 venv 里 Scripts\python.exe 只是启动器，真正干活的解释器是它派生的
+    # uv 子进程，监听端口的往往就是这个子进程。只看监听者本身会把项目自己的服务
+    # 误判成外部程序并拒绝启动，因此向上追溯父进程确认归属。
+    $parentId = [int](
+        Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    ).ParentProcessId
+    for ($depth = 0; $depth -lt 4 -and $parentId -gt 0; $depth++) {
+        $parentInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+        if ($null -eq $parentInfo) { return $false }
+        if ($parentInfo.ExecutablePath -match $RootPattern) { return $true }
+        $parentId = [int]$parentInfo.ParentProcessId
+    }
+    return $false
+}
+
 function Test-ProjectOwnedListener([int]$Port) {
     $rootPattern = [regex]::Escape($Root.TrimEnd('\') + '\')
     $listeners = @(
@@ -77,7 +93,10 @@ function Test-ProjectOwnedListener([int]$Port) {
             return $false
         }
         $identity = "$($processInfo.ExecutablePath) $($processInfo.CommandLine)"
-        if ($identity -notmatch $rootPattern) {
+        if ($identity -match $rootPattern) {
+            continue
+        }
+        if (-not (Get-ProjectOwnedParentMatch -ProcessId $listenerId -RootPattern $rootPattern)) {
             return $false
         }
     }
@@ -87,10 +106,20 @@ function Test-ProjectOwnedListener([int]$Port) {
 function Save-ServicePid([string]$Name, [System.Diagnostics.Process]$Process) {
     $pidPath = Join-Path $LogDirectory "$Name.pid"
     # PID 会被系统复用；同时保存创建时间和程序路径才能识别同一次启动。
+    # Start-Process 刚返回时 $Process.Path 常为 $null，一旦写成 null，停止脚本
+    # 就会放弃按 PID 回收，留下占用端口的残留服务让下次启动直接失败。
+    try { $Process.Refresh() } catch { }
+    $executablePath = $null
+    try { $executablePath = $Process.Path } catch { }
+    if ([string]::IsNullOrWhiteSpace($executablePath)) {
+        $executablePath = (
+            Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.Id)" -ErrorAction SilentlyContinue
+        ).ExecutablePath
+    }
     $identity = @{
         ProcessId = $Process.Id
         StartedUtcTicks = $Process.StartTime.ToUniversalTime().Ticks.ToString()
-        ExecutablePath = $Process.Path
+        ExecutablePath = $executablePath
         ProjectRoot = $Root
         Service = $Name
     }

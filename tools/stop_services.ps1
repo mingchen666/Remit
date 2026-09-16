@@ -45,7 +45,18 @@ function Test-ProjectListener([int]$ListenerId, [string]$Name) {
                 (Join-Path $Root "backend\.venv\Scripts\python.exe"),
                 (Join-Path $Root "backend\venv\Scripts\python.exe")
             )
-            return $info.ExecutablePath -in $pythonPaths -and $info.CommandLine -match '\buvicorn\s+app\.main:app\b'
+            if ($info.CommandLine -notmatch '\buvicorn\s+app\.main:app\b') { return $false }
+            if ($info.ExecutablePath -in $pythonPaths) { return $true }
+            # uv 托管的 venv 由 venv 内 python.exe 派生子解释器并让子进程监听端口，
+            # 监听者路径不在 $pythonPaths 里；向上追溯父进程确认它仍属于本项目。
+            $parentId = [int]$info.ParentProcessId
+            for ($depth = 0; $depth -lt 4 -and $parentId -gt 0; $depth++) {
+                $parentInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+                if ($null -eq $parentInfo) { return $false }
+                if ($parentInfo.ExecutablePath -in $pythonPaths) { return $true }
+                $parentId = [int]$parentInfo.ParentProcessId
+            }
+            return $false
         }
         "frontend" {
             $vitePath = [regex]::Escape($rootPrefix + 'frontend\node_modules\')
