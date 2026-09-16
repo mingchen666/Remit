@@ -9,6 +9,10 @@ from pathlib import Path
 import ansi2html  # type: ignore[import-unresolved]
 import nbformat
 from nbformat import v4 as nbf
+from nbformat.validator import NotebookValidationError
+
+
+MAX_NOTEBOOK_BYTES = 64 * 1024 * 1024
 
 
 class NotebookSerializer:
@@ -28,12 +32,32 @@ class NotebookSerializer:
     def init_notebook(
         self, work_dir: str | None = None, notebook_name: str = "notebook.ipynb"
     ) -> None:
-        """确定 notebook 落盘位置；目录为空时仅驻留内存。"""
+        """确定 notebook 落盘位置，并在断点续跑时加载已有内容。
+
+        已有 notebook 是工作流的执行证据，不能在新解释器追加第一个分段时
+        静默覆盖。损坏或异常大的文件也不能当作正常 notebook 继续写入。
+        """
         if not work_dir:
             return
         if not notebook_name.lower().endswith(".ipynb"):
             notebook_name += ".ipynb"
-        self.notebook_path = str(Path(work_dir) / notebook_name)
+        notebook_path = Path(work_dir) / notebook_name
+        self.notebook_path = str(notebook_path)
+        if not notebook_path.is_file():
+            return
+        if notebook_path.stat().st_size > MAX_NOTEBOOK_BYTES:
+            raise ValueError(
+                f"已有 notebook 超过 {MAX_NOTEBOOK_BYTES} 字节，拒绝覆盖"
+            )
+        try:
+            loaded = nbformat.reads(
+                notebook_path.read_text(encoding="utf-8"),
+                as_version=4,
+            )
+            nbformat.validate(loaded)
+        except (OSError, ValueError, NotebookValidationError) as exc:
+            raise ValueError("已有 notebook 格式损坏，已保留原文件并停止追加") from exc
+        self.nb = loaded
 
     @staticmethod
     def ansi_to_html(ansi_text: str) -> str:

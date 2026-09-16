@@ -221,6 +221,8 @@ class PredictionDeliverableTests(unittest.TestCase):
             self.assertIn("ques1_predictions.csv", prompt)
             self.assertIn("ques1_prediction_metrics.json", prompt)
             self.assertIn("ques1_model_metrics.csv", prompt)
+            self.assertIn("第一次 execute_code", prompt)
+            self.assertNotIn("最后一次 execute_code", prompt)
 
     def test_prediction_model_must_beat_grouped_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -111,6 +111,23 @@ class WorkflowApprovalRequired(RuntimeError):
         super().__init__(f"等待人工审核：{approval.get('node_label', '')}")
 
 
+class WorkflowPausedForReview(RuntimeError):
+    """节点质量门未通过、HIL 已关闭，工作流不应被强制标 failed。
+
+    调用方已把当前节点和原因写入 pending_approval，并把 status 改为
+    ``awaiting_approval``。任务在等待用户回到页面：
+    - 批准 → 携带现有不完整产物继续；
+    - 退回 → 带着用户意见从该节点重新跑；
+    - 续跑 → 从该节点起重新生成产物。
+    """
+
+    def __init__(self, approval: dict[str, Any]):
+        self.approval = approval
+        super().__init__(
+            f"质量门未通过，已挂起等待人工裁决：{approval.get('node_label', '')}"
+        )
+
+
 def _build_manual_execution_review(
     *,
     key: str,
@@ -493,16 +510,33 @@ class RemitWorkFlow(WorkFlow):
         allow_incomplete: bool = False,
         explain: dict[str, Any] | None = None,
     ) -> None:
-        """按 HIL 配置建立人工闸门；自动模式绝不放行不完整产物。"""
+        """按 HIL 配置建立人工闸门。
+
+        自动模式（HIL 关闭）下，未完成的节点必须挂起等待人工裁决，
+        而不是被强制标 failed 让用户看不到下一步在哪里。
+        """
         if self.checkpoint is None:
             raise RuntimeError("workflow checkpoint is not initialized")
         checkpoint_key = self._hil_checkpoint_key(node_id)
         if not self._hil_enabled_for(node_id):
             if allow_incomplete:
-                raise RuntimeError(
-                    f"{node_id} 自动质量门未通过，且人工审核已关闭；"
-                    "任务已明确失败，不会把不完整产物自动放行。"
+                # 不再抛 RuntimeError 把任务推入 failed：把它落到
+                # ``awaiting_approval`` 并挂起 pending_approval，让用户
+                # 在页面上批准/退回/续跑，保留对不完整产物的处置权。
+                logger.warning(
+                    f"人工审核已关闭且 {node_id}（{checkpoint_key}）质量门"
+                    "未通过；挂起等待人工裁决而非作废任务"
                 )
+                pending = self.checkpoint.request_approval(
+                    state,
+                    node_id,
+                    summary=summary,
+                    artifacts=artifacts,
+                    quality_report=quality_report,
+                    allow_incomplete=True,
+                    explain=explain,
+                )
+                raise WorkflowPausedForReview(pending)
             logger.info(f"人工审核已关闭，节点 {node_id}（{checkpoint_key}）自动继续")
             return None
 
@@ -537,7 +571,14 @@ class RemitWorkFlow(WorkFlow):
     def _resolve_pending_approval_on_resume(
         self, state: dict[str, Any]
     ) -> dict[str, Any]:
-        """让关闭 HIL 后恢复的旧任务不再困在历史审核状态。"""
+        """让关闭 HIL 后恢复的旧任务不再困在历史审核状态。
+
+        历史 pending 来自质量门失败且 HIL 已关闭时，把任务挂回
+        ``awaiting_approval`` 让用户接管，而不是抛 RuntimeError 把任务推到
+        ``failed``。这条路径仅在 ``run_modeling_task_async`` 重新触发流程
+        时生效；用户已经主动通过 UI 进入项目的场景由 resume_task 直接读取
+        pending_approval，不会走这里。
+        """
         if self.checkpoint is None:
             raise RuntimeError("workflow checkpoint is not initialized")
         pending = self.checkpoint.pending_approval(state)
@@ -552,10 +593,13 @@ class RemitWorkFlow(WorkFlow):
             state.get("completed_nodes", [])
         )
         if is_incomplete:
-            raise RuntimeError(
-                f"{node_id} 的历史审核来自未通过的质量门，且人工审核已关闭；"
-                "任务已明确失败，不会把不完整产物自动放行。"
+            # 复用现有 pending_approval 即可，状态已经是 awaiting_approval。
+            # 调用方捕获 WorkflowPausedForReview 完成页面通知与状态稳定化。
+            logger.warning(
+                f"{node_id} 历史审核来自未通过质量门且 HIL 已关闭；"
+                "挂起等待人工裁决而非作废任务"
             )
+            raise WorkflowPausedForReview(pending)
 
         logger.info(f"人工审核已关闭，自动释放历史审核节点 {node_id}")
         return self.checkpoint.auto_continue(
@@ -1351,8 +1395,33 @@ class RemitWorkFlow(WorkFlow):
             )
         contract = value.get("contract")
         recovered_gate_report = None
-        if contract is not None and find_reusable_stage_artifacts(
-            self.work_dir, contract
+        repair_execution_limit: int | None = None
+        reusable_stage_artifacts = (
+            find_reusable_stage_artifacts(self.work_dir, contract)
+            if contract is not None
+            else []
+        )
+        quality_report_exists = bool(
+            contract is not None
+            and (Path(self.work_dir) / contract.quality_filename).is_file()
+        )
+        incomplete_revision = bool(
+            revision_feedback
+            and any(
+                isinstance(item, dict)
+                and item.get("decision") == "revise"
+                and item.get("allow_incomplete") is True
+                and str(
+                    item.get("revision_target_node_id")
+                    or item.get("node_id")
+                    or ""
+                )
+                == node_id
+                for item in reversed(state.get("approval_history", []))
+            )
+        )
+        if contract is not None and (
+            reusable_stage_artifacts or quality_report_exists or incomplete_revision
         ):
             try:
                 recovered_report = validate_question_deliverables(
@@ -1379,10 +1448,21 @@ class RemitWorkFlow(WorkFlow):
                     ),
                 )
             except DeliverableValidationError as interrupted_error:
+                repair_execution_limit = 2
+                repair_prompt = build_repair_prompt(
+                    contract, interrupted_error, self.work_dir
+                )
                 coder_prompt = (
-                    f"{coder_prompt}\n\n"
-                    "【检测到上次中断留下的真实计算产物，优先执行收尾恢复】\n"
-                    f"{build_repair_prompt(contract, interrupted_error, self.work_dir)}"
+                    "【断点返修模式：本轮只修复现有产物】\n"
+                    "现有计算证据必须保留。第一轮先读取质量报告和报错涉及的文件，"
+                    "只修改门禁明确指出的问题并立即回读验证；禁止重新探索原始数据、"
+                    "安装依赖、重跑与报错无关的模型或重建已经存在的图表。\n"
+                    + (
+                        f"\n【人工审核退回意见，优先级最高】\n{revision_feedback}\n"
+                        if revision_feedback
+                        else ""
+                    )
+                    + f"\n{repair_prompt}"
                 )
         coder_response: CoderToWriter | None = None
         gate_report = None
@@ -1478,6 +1558,7 @@ class RemitWorkFlow(WorkFlow):
                 coder_response = await coder_agent.run(
                     prompt=coder_prompt,
                     subtask_title=key,
+                    max_code_executions=repair_execution_limit,
                 )
                 await publish_activity(
                     self.task_id,
@@ -1588,6 +1669,10 @@ class RemitWorkFlow(WorkFlow):
                             revision_plan=revision_plan.model_dump(mode="json"),
                             contract_prompt=contract.prompt_block(),
                         )
+                        # 换模是一次新的真实求解，不是只修 JSON/CSV 的格式返修；
+                        # 必须恢复完整执行预算，否则新方案会在两次工具调用后再次
+                        # 被截断，永远无法形成可比较的模型证据。
+                        repair_execution_limit = None
                         await redis_manager.publish_message(
                             self.task_id,
                             SystemMessage(
@@ -1611,6 +1696,7 @@ class RemitWorkFlow(WorkFlow):
                         coder_prompt = build_repair_prompt(
                             contract, error, self.work_dir
                         )
+                        repair_execution_limit = 2
                     continue
 
             if gate_report.manual_review_required:
@@ -1733,6 +1819,9 @@ class RemitWorkFlow(WorkFlow):
                     revision_plan=revision_plan.model_dump(mode="json"),
                     contract_prompt=contract.prompt_block(),
                 )
+                # 通过格式门禁后的建模手 refine 同样代表换模重算，不能沿用
+                # 断点格式返修的两次执行上限。
+                repair_execution_limit = None
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(

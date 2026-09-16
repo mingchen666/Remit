@@ -9,6 +9,8 @@ from pathlib import Path
 
 from app.core.deliverable_contract import (
     DeliverableValidationError,
+    ModelQualityValidationError,
+    _validate_type_specific,
     build_question_contract,
     build_stage_contract,
     validate_final_paper,
@@ -17,6 +19,35 @@ from app.core.deliverable_contract import (
 
 
 class WorkflowQualityGateTests(unittest.TestCase):
+    def test_analysis_prompt_declares_scalar_field_types(self) -> None:
+        contract = build_question_contract(
+            "ques1",
+            "建立两束光干涉模型，反演外延层厚度并分析结果可靠性",
+        )
+
+        prompt = contract.prompt_block()
+
+        self.assertIn("evidence_checks` 必须是", prompt)
+        self.assertIn("不得写数组或对象", prompt)
+        self.assertIn("必须是 JSON 布尔值 `true`", prompt)
+
+    def test_eda_flag_error_names_field_and_expected_type(self) -> None:
+        for invalid in ("同一晶圆的两次测量", [], {}, 1, False, None):
+            with self.subTest(invalid=invalid):
+                values = {
+                    "raw_rows": 10,
+                    "cleaned_rows": 9,
+                    "missingness_checked": True,
+                    "duplicates_checked": True,
+                    "outliers_assessed": True,
+                    "independent_unit_identified": invalid,
+                }
+                with self.assertRaisesRegex(
+                    DeliverableValidationError,
+                    "type_specific.independent_unit_identified.*true.*not_applicable",
+                ):
+                    _validate_type_specific(values, build_stage_contract("eda"))
+
     @staticmethod
     def _base_report(problem_type: str) -> dict:
         return {
@@ -63,6 +94,33 @@ class WorkflowQualityGateTests(unittest.TestCase):
                 json.dumps(report, ensure_ascii=False), encoding="utf-8"
             )
             with self.assertRaisesRegex(DeliverableValidationError, "不可行"):
+                validate_question_deliverables(root, contract)
+
+    def test_analysis_fail_status_requests_model_revision(self) -> None:
+        contract = build_question_contract(
+            "ques1",
+            "建立两束光干涉模型，反演外延层厚度并分析结果可靠性",
+        )
+        self.assertEqual(contract.problem_type, "analysis")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root.joinpath("result.json").write_text("{}", encoding="utf-8")
+            root.joinpath("figure.png").write_bytes(b"not-empty")
+            report = self._base_report("analysis")
+            report["status"] = "fail"
+            report["type_specific"] = {
+                "evidence_checks": 2,
+                "uncertainty_reported": True,
+                "effect_size_reported": True,
+            }
+            root.joinpath("ques1_quality_report.json").write_text(
+                json.dumps(report, ensure_ascii=False), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                ModelQualityValidationError,
+                "status 必须为 pass",
+            ):
                 validate_question_deliverables(root, contract)
 
     def test_evidence_backed_baseline_retention_can_pass(self) -> None:

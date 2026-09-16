@@ -93,18 +93,34 @@ class AnthropicProvider(BaseProvider):
                 continue
 
             if role == "tool":
-                converted.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": msg.get("tool_call_id", ""),
-                                "content": msg.get("content", ""),
-                            }
-                        ],
-                    }
+                result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "content": msg.get("content", ""),
+                }
+                previous_content = (
+                    converted[-1].get("content") if converted else None
                 )
+                if (
+                    converted
+                    and converted[-1].get("role") == "user"
+                    and isinstance(previous_content, list)
+                    and previous_content
+                    and all(
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                        for block in previous_content
+                    )
+                ):
+                    # Anthropic 要求一次 assistant 返回的并行 tool_use，必须在
+                    # 紧随其后的同一条 user 消息中一次性给出全部 tool_result。
+                    # OpenAI 中性的历史会把每个结果存成独立 tool 消息，因此
+                    # Provider 边界需要在发送前把连续结果合并成一个内容块列表。
+                    previous_content.append(result_block)
+                else:
+                    converted.append(
+                        {"role": "user", "content": [result_block]}
+                    )
                 continue
 
             converted.append(

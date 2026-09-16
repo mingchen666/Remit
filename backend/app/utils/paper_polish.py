@@ -340,7 +340,29 @@ def polish_markdown(markdown: str, work_dir: Path) -> str:
     markdown = merge_image_blocks(markdown, work_dir)
     markdown = append_source_code_appendix(markdown, work_dir)
     markdown = ensure_blank_lines_around_headings(markdown)
+    markdown = enforce_em_dash_budget(markdown)
     return markdown.strip() + "\n"
+
+
+def enforce_em_dash_budget(markdown: str, budget: int = 2) -> str:
+    """Keep the final prose within the style auditor's em-dash budget.
+
+    Writer output can contain a few rhetorical em dashes even when prompted not
+    to.  Preserve the first occurrences for intentional emphasis and normalize
+    any excess to a Chinese comma so the final deterministic audit does not
+    repeatedly suspend an otherwise complete paper for the same style issue.
+    """
+    if budget < 0:
+        raise ValueError("破折号预算不能为负数")
+    seen = 0
+    chars: list[str] = []
+    for char in markdown:
+        if char == "—":
+            seen += 1
+            chars.append(char if seen <= budget else "，")
+        else:
+            chars.append(char)
+    return "".join(chars)
 
 
 def normalize_common_math(markdown: str) -> str:

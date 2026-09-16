@@ -1,49 +1,21 @@
 """协调者 Agent 模块，负责识别用户意图并拆解数学建模问题。"""
 
 from app.core.agents.agent import Agent
-from app.core.llm.llm import LLM
-from app.core.llm.types import StandardResponse
 from app.core.json_recovery import decode_json_object
 from app.core.prompts.coordinator import COORDINATOR_PROMPT, REFINE_ANALYSIS_PROMPT
+from app.core.structured_output import (
+    configured_output_budget,
+    expanded_output_budget,
+    response_was_truncated,
+)
 import json
 import re
 from app.utils.log_util import logger
 from app.schemas.A2A import CoordinatorToModeler, QuestionAnalysis
 
 
-_DEFAULT_STRUCTURED_OUTPUT_TOKENS = 8192
-_MAX_STRUCTURED_OUTPUT_TOKENS = 65536
-_TRUNCATION_REASONS = {
-    "length",
-    "max_tokens",
-    "max_output_tokens",
-    "incomplete",
-}
-
-
 class _StructuredOutputTruncated(ValueError):
     """供应商因输出预算耗尽而返回了不完整的结构化内容。"""
-
-
-def _configured_output_budget(model: LLM) -> int:
-    configured = getattr(model, "max_tokens", None)
-    if isinstance(configured, int) and configured > 0:
-        return configured
-    return _DEFAULT_STRUCTURED_OUTPUT_TOKENS
-
-
-def _response_was_truncated(
-    response: StandardResponse,
-    requested_tokens: int,
-) -> bool:
-    reason = str(response.finish_reason or "").strip().lower()
-    if any(marker in reason for marker in _TRUNCATION_REASONS):
-        return True
-    return requested_tokens > 0 and response.usage.completion_tokens >= requested_tokens
-
-
-def _expanded_output_budget(current: int) -> int:
-    return min(max(current * 2, 16384), _MAX_STRUCTURED_OUTPUT_TOKENS)
 
 
 def _question_keys(questions: dict) -> set[str]:
@@ -108,7 +80,7 @@ class CoordinatorAgent(Agent):
             }
         )
         attempt = 0
-        output_budget = _configured_output_budget(self.model)
+        output_budget = configured_output_budget(self.model)
         while True:
             try:
                 response = await self._chat(
@@ -116,7 +88,7 @@ class CoordinatorAgent(Agent):
                     agent_name=self.__class__.__name__,
                     max_tokens=output_budget,
                 )
-                if _response_was_truncated(response, output_budget):
+                if response_was_truncated(response, output_budget):
                     raise _StructuredOutputTruncated(
                         "供应商在输出上限处截断响应："
                         f"finish_reason={response.finish_reason or 'unknown'}, "
@@ -164,7 +136,7 @@ class CoordinatorAgent(Agent):
 
             except _StructuredOutputTruncated as e:
                 attempt += 1
-                next_budget = _expanded_output_budget(output_budget)
+                next_budget = expanded_output_budget(output_budget)
                 logger.warning(
                     f"协调器结构化输出被截断 (第{attempt}/3次): {e}；"
                     f"下次预算={next_budget}"
@@ -236,7 +208,7 @@ class CoordinatorAgent(Agent):
             }
         )
         last_error: Exception | None = None
-        output_budget = _configured_output_budget(self.model)
+        output_budget = configured_output_budget(self.model)
         for attempt in range(1, 4):
             try:
                 response = await self._chat(
@@ -244,7 +216,7 @@ class CoordinatorAgent(Agent):
                     agent_name=self.__class__.__name__,
                     max_tokens=output_budget,
                 )
-                if _response_was_truncated(response, output_budget):
+                if response_was_truncated(response, output_budget):
                     raise _StructuredOutputTruncated(
                         "数据校正版题意在输出上限处被截断："
                         f"finish_reason={response.finish_reason or 'unknown'}, "
@@ -270,7 +242,7 @@ class CoordinatorAgent(Agent):
             except (json.JSONDecodeError, ValueError, KeyError) as exc:
                 last_error = exc
                 if isinstance(exc, _StructuredOutputTruncated):
-                    output_budget = _expanded_output_budget(output_budget)
+                    output_budget = expanded_output_budget(output_budget)
                 logger.warning(
                     f"数据校正版题意结构校验失败 (第{attempt}/3次): {exc}；"
                     f"下次预算={output_budget}"

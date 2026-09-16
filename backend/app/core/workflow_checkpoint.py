@@ -351,8 +351,14 @@ class WorkflowCheckpoint:
             }
         )
         state["pending_approval"] = None
+        # 质量门失败后挂起的节点本就处于“未完成”状态。此时退回的语义是
+        # 基于已落盘证据做增量修复；若仍按已完成节点返工清空文件，续跑会被迫
+        # 从头计算，并再次消耗整轮代码预算。正常已完成节点的主动返工仍清理
+        # 旧证据，避免旧结果冒充本轮新产物。
         state = self.prepare_resume(
-            state, node_id, preserve_interrupted_artifacts=False
+            state,
+            node_id,
+            preserve_interrupted_artifacts=bool(pending.get("allow_incomplete")),
         )
         feedback_by_node = dict(state.get("revision_feedback", {}))
         feedback_by_node[node_id] = normalized_feedback

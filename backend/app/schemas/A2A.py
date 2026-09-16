@@ -163,6 +163,43 @@ class ModelRevisionPlan(BaseModel):
     validation_plan: str = Field(min_length=20)
     acceptance_criteria: str = Field(min_length=10)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_explained_model_choice(cls, data: Any) -> Any:
+        """把“候选名 + 说明”归一为候选名，仍拒绝真正的未知选择。
+
+        模型有时会在 selected_model 中先给出主候选的精确名称，随后补充
+        “并以某模型作嵌套对照”等执行说明。候选集合与完整说明已分别存在于
+        candidate_models/revised_strategy，线协议这里只保留开头的主候选名。
+        """
+        if not isinstance(data, dict):
+            return data
+        selected = str(data.get("selected_model", "")).strip()
+        candidates = data.get("candidate_models")
+        if not selected or not isinstance(candidates, list):
+            return data
+        exact_names = [
+            str(item.get("name", "")).strip()
+            for item in candidates
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        ]
+        if selected.casefold() in {name.casefold() for name in exact_names}:
+            return data
+        prefixed = [
+            name
+            for name in exact_names
+            if selected.casefold().startswith(name.casefold())
+            and (
+                len(selected) == len(name)
+                or selected[len(name)] in "，,；;、 /+（("
+            )
+        ]
+        if len(prefixed) != 1:
+            return data
+        normalized = dict(data)
+        normalized["selected_model"] = prefixed[0]
+        return normalized
+
     @model_validator(mode="after")
     def validate_model_choice(self) -> "ModelRevisionPlan":
         """保证返修方案包含基线，且入选模型属于候选集合。"""

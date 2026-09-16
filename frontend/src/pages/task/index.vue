@@ -26,7 +26,7 @@ import { useToast } from "@/components/ui/toast";
 import ProjectWorkspaceShell from "@/pages/task/components/ProjectWorkspaceShell.vue";
 import { useTaskStore } from "@/stores/task";
 import { LoaderCircle } from "lucide-vue-next";
-import { onBeforeMount, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeMount, onBeforeUnmount, onMounted, ref } from "vue";
 
 const props = defineProps<{ task_id: string }>();
 
@@ -157,6 +157,37 @@ async function loadResumeOptions(waitForCleanup = false) {
 	}
 }
 
+// 续跑原因：HIL 已关闭时，质量门失败会把任务挂起为 awaiting_approval。
+// 这里把审批摘要取出，让对话框清楚告诉用户"上次为什么没通过"。
+const resumeFailureReason = computed<string>(() => {
+	const pending = taskStore.pendingApproval;
+	if (!pending) return "";
+	if (pending.node_id !== resumeOptions.value?.current_node) return "";
+	const reason = String(
+		pending.quality_report?.gate_failure_reason || "",
+	).trim();
+	if (reason) return reason;
+	const fallback = String(pending.quality_report?.failure_reason || "").trim();
+	if (fallback) return fallback;
+	const summary = String(pending.summary || "").trim();
+	return summary;
+});
+
+// 是否存在"被门禁挂起"的节点：对它续跑就是一次"自动重跑该节点"。
+const hasInterruptionToReRun = computed<boolean>(
+	() =>
+		resumeOptions.value?.nodes.some((node) => node.status === "interrupted") ??
+		false,
+);
+
+const resumeConfirmLabel = computed(() =>
+	isResuming.value
+		? "正在启动…"
+		: hasInterruptionToReRun.value
+			? "重跑本节点产物"
+			: "从此节点继续",
+);
+
 async function handleResume() {
 	if (!selectedResumeNode.value || isResuming.value) return;
 	isResuming.value = true;
@@ -250,9 +281,19 @@ onBeforeUnmount(() => {
       <DialogHeader>
         <DialogTitle>选择续跑节点</DialogTitle>
         <DialogDescription class="leading-6">
-          系统会保留该节点之前已完成的成果，从所选节点重新执行，并覆盖它之后的旧结果。
+          {{ hasInterruptionToReRun
+            ? "上次运行在该节点被质量门挂起，从这里重跑会先作废旧产物，再让 Agent 按契约重新生成。"
+            : "系统会保留该节点之前已完成的成果，从所选节点重新执行，并覆盖它之后的旧结果。" }}
         </DialogDescription>
       </DialogHeader>
+      <div
+        v-if="resumeFailureReason"
+        class="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-200"
+        data-testid="resume-failure-reason"
+      >
+        <strong class="block font-semibold">上次失败原因</strong>
+        <span>{{ resumeFailureReason }}</span>
+      </div>
       <div class="min-w-0 space-y-2 py-2" data-testid="resume-task-dialog">
         <label for="resume-node" class="text-sm font-medium">恢复位置</label>
         <Select v-model="selectedResumeNode">
@@ -279,7 +320,7 @@ onBeforeUnmount(() => {
           <Button type="button" variant="outline" :disabled="isResuming">取消</Button>
         </DialogClose>
         <Button type="button" :disabled="!selectedResumeNode || isResuming" data-testid="confirm-resume-task-button" @click="handleResume">
-          {{ isResuming ? '正在启动…' : '从此节点继续' }}
+          {{ resumeConfirmLabel }}
         </Button>
       </DialogFooter>
     </DialogContent>

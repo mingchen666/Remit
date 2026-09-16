@@ -78,6 +78,16 @@ def _accepted_review(
 
 
 class ModelPlanParsingTests(unittest.TestCase):
+    def test_revision_plan_normalizes_explained_selected_model(self) -> None:
+        payload = _revision_plan("GBRT").model_dump(mode="json")
+        payload["selected_model"] = (
+            "GBRT，并以 Ridge 作为嵌套对照；MedianBaseline 作为基线"
+        )
+
+        plan = ModelRevisionPlan.model_validate(payload)
+
+        self.assertEqual(plan.selected_model, "GBRT")
+
     def test_prefixed_json_keeps_every_modeling_stage(self) -> None:
         content = (
             "下面是建模方案。"
@@ -693,6 +703,9 @@ class WorkflowModelRevisionTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(coder_agent.run.await_count, 2)
             second_prompt = coder_agent.run.await_args_list[1].kwargs["prompt"]
+            self.assertIsNone(
+                coder_agent.run.await_args_list[1].kwargs["max_code_executions"]
+            )
             self.assertIn("建模手根据真实运行结果发起换模", second_prompt)
             self.assertIn("GBRT", second_prompt)
             self.assertIn("禁止降低门槛", second_prompt)

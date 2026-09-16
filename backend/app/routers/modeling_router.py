@@ -1,7 +1,11 @@
 """建模任务路由模块，提供任务创建、API 验证和配置管理等接口。"""
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile
-from app.core.workflow import RemitWorkFlow, WorkflowApprovalRequired
+from app.core.workflow import (
+    RemitWorkFlow,
+    WorkflowApprovalRequired,
+    WorkflowPausedForReview,
+)
 from app.core.agents.coder_agent import CoderAgentUnavailableError
 from app.core.workflow_checkpoint import (
     WorkflowCheckpoint,
@@ -511,6 +515,29 @@ async def run_modeling_task_async(
                 revision_count=int(approval.get("revision_count", 0)),
                 revision_targets=list(approval.get("revision_targets", [])),
                 explain=dict(approval.get("explain", {}) or {}),
+            ),
+        )
+    except WorkflowPausedForReview as pause:
+        # 质量门未通过 + HIL 已关闭：把任务挂回 awaiting_approval 让用户接管。
+        # pending_approval 已经在调用方写入，状态由 checkpoint.request_approval
+        # 持久化为 awaiting_approval；这里只补一条系统提示便于前端区分。
+        workflow.mark_status("awaiting_approval")
+        _auto_resume_counts.pop(task_id, None)
+        approval = pause.approval
+        quality_status = str(dict(approval.get("quality_report", {})).get("status", ""))
+        if quality_status == "manual_review":
+            hint = "该节点结果需要人工裁决（HIL 已关闭，已自动挂起）。"
+        else:
+            hint = "该节点质量门未通过（HIL 已关闭，已自动挂起）。"
+        await redis_manager.publish_message(
+            task_id,
+            SystemMessage(
+                content=(
+                    f"任务挂起等待人工裁决：{approval.get('node_label', approval.get('node_id', ''))}。"
+                    f"{hint}请在项目页批准、放行或退回以继续。"
+                ),
+                type="warning",
+                task_status="awaiting_approval",
             ),
         )
     except asyncio.CancelledError:

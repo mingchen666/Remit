@@ -113,6 +113,55 @@ class ProviderMultimodalConversionTests(unittest.TestCase):
             [{"role": "user", "content": "hi"}],
         )
 
+    def test_anthropic_groups_parallel_tool_results(self) -> None:
+        """同一轮的并行工具结果必须合并到紧随其后的单条 user 消息。"""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "查询两组资料",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_papers",
+                            "arguments": '{"query":"one"}',
+                        },
+                    },
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {
+                            "name": "search_papers",
+                            "arguments": '{"query":"two"}',
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "name": "search_papers",
+                "content": "result one",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-2",
+                "name": "search_papers",
+                "content": "result two",
+            },
+        ]
+
+        _, converted = AnthropicProvider()._convert_messages(messages)
+
+        self.assertEqual(len(converted), 2)
+        self.assertEqual(converted[0]["role"], "assistant")
+        self.assertEqual(converted[1]["role"], "user")
+        self.assertEqual(
+            [block["tool_use_id"] for block in converted[1]["content"]],
+            ["call-1", "call-2"],
+        )
+
 
 class FigureExtractionTests(unittest.TestCase):
     def test_extracts_vector_figure_and_scanned_page(self) -> None:

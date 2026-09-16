@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import BackgroundTasks, HTTPException
 
-from app.core.workflow import RemitWorkFlow, WorkflowApprovalRequired
+from app.core.workflow import (
+    RemitWorkFlow,
+    WorkflowApprovalRequired,
+    WorkflowPausedForReview,
+)
 from app.config.setting import settings
 from app.core.workflow_checkpoint import (
     WorkflowCheckpoint,
@@ -109,7 +113,8 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(result)
             self.assertIsNone(checkpoint.load().get("pending_approval"))
 
-    async def test_hil_disable_does_not_auto_approve_incomplete_output(self) -> None:
+    async def test_hil_disable_suspends_incomplete_node_for_manual_review(self) -> None:
+        """HIL 关闭 + 节点未通过质量门：挂起等待人工裁决，不抛异常作废任务。"""
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint = WorkflowCheckpoint(tmp)
             state = checkpoint.initialize(self._problem())
@@ -119,7 +124,7 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(settings, "HIL_ENABLED", False),
-                self.assertRaisesRegex(RuntimeError, "人工审核已关闭"),
+                self.assertRaises(WorkflowPausedForReview) as paused,
             ):
                 await workflow._require_human_approval(
                     state,
@@ -127,6 +132,16 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
                     summary="质量门未通过",
                     allow_incomplete=True,
                 )
+
+            persisted = checkpoint.load()
+            self.assertEqual(persisted["status"], "awaiting_approval")
+            self.assertEqual(
+                persisted["pending_approval"]["checkpoint_id"],
+                paused.exception.approval["checkpoint_id"],
+            )
+            self.assertTrue(
+                persisted["pending_approval"]["allow_incomplete"]
+            )
 
     def test_resume_releases_historical_approval_when_hil_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,7 +167,8 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
                 pending["checkpoint_id"],
             )
 
-    def test_resume_does_not_release_incomplete_historical_approval(self) -> None:
+    def test_resume_suspends_incomplete_historical_approval_for_review(self) -> None:
+        """HIL 关闭 + 历史不完整审核：挂起等待人工裁决，不作废任务。"""
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint = WorkflowCheckpoint(tmp)
             state = checkpoint.initialize(self._problem())
@@ -167,12 +183,16 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(settings, "HIL_ENABLED", False),
-                self.assertRaisesRegex(RuntimeError, "不会把不完整产物自动放行"),
+                self.assertRaises(WorkflowPausedForReview) as paused,
             ):
                 workflow._resolve_pending_approval_on_resume(state)
 
             self.assertEqual(
                 checkpoint.load()["pending_approval"]["checkpoint_id"],
+                pending["checkpoint_id"],
+            )
+            self.assertEqual(
+                paused.exception.approval["checkpoint_id"],
                 pending["checkpoint_id"],
             )
 
@@ -224,6 +244,49 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
                 "存在数据泄漏，必须按主体分组验证。",
             )
             self.assertEqual(revised["revision_counts"]["modeler"], 1)
+
+    async def test_revision_of_incomplete_solver_preserves_repair_artifacts(
+        self,
+    ) -> None:
+        """质量门失败后的人工返修应复用落盘证据，而不是从头求解。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = WorkflowCheckpoint(root)
+            state = checkpoint.initialize(self._problem())
+            self._completed_node(checkpoint, state)
+            state["modeler_response"] = {
+                "questions_solution": {"ques1": "回归"}
+            }
+            checkpoint.complete_node(state, "modeler")
+            checkpoint.start_node(state, "solve:eda")
+            report_path = root / "eda_quality_report.json"
+            artifact_path = root / "eda_clean.csv"
+            report_path.write_text(
+                '{"status":"manual_review","artifacts":["eda_clean.csv"]}',
+                encoding="utf-8",
+            )
+            artifact_path.write_text("x\n1\n", encoding="utf-8")
+            pending = checkpoint.request_approval(
+                state,
+                "solve:eda",
+                summary="质量门未通过",
+                artifacts=["eda_quality_report.json", "eda_clean.csv"],
+                allow_incomplete=True,
+            )
+
+            revised = checkpoint.request_revision(
+                state,
+                pending["checkpoint_id"],
+                "只修复质量报告中的字段类型。",
+            )
+
+            self.assertTrue(report_path.is_file())
+            self.assertTrue(artifact_path.is_file())
+            self.assertEqual(revised["current_node"], "solve:eda")
+            self.assertEqual(
+                checkpoint.consume_revision_feedback(revised, "solve:eda"),
+                "只修复质量报告中的字段类型。",
+            )
 
     async def test_reviewer_can_return_to_an_earlier_approved_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

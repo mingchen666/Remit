@@ -116,6 +116,49 @@ class ProblemAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(result.question_analyses), {"ques1", "ques2"})
         self.assertEqual(llm.chat.await_count, 2)
 
+    async def test_modeler_expands_budget_after_truncated_json(self) -> None:
+        valid_plan = {
+            "eda": (
+                "检查附件字段、缺失值、异常值和光谱分布，识别测量范围与采样间隔，"
+                "并保存包含统计摘要和可视化的可复现数据质量报告。"
+            ),
+            "ques1": (
+                "建立包含折射率色散与入射角修正的厚度反演模型，提取多个相邻条纹，"
+                "并使用两个入射角的结果做一致性比较与交叉验证。"
+            ),
+            "sensitivity_analysis": (
+                "分别扰动折射率、入射角和峰值位置，重复估计外延层厚度，报告稳定区间、"
+                "置信范围与主要误差来源，并检查结论是否依赖单次选峰。"
+            ),
+        }
+        llm = MagicMock()
+        llm.max_tokens = 4096
+        llm.chat = AsyncMock(
+            side_effect=[
+                StandardResponse(
+                    content="",
+                    finish_reason="max_tokens",
+                    usage=Usage(completion_tokens=4096),
+                ),
+                StandardResponse(
+                    content=json.dumps(valid_plan, ensure_ascii=False),
+                    finish_reason="stop",
+                    usage=Usage(completion_tokens=1200),
+                ),
+            ]
+        )
+        coordinator = CoordinatorToModeler(
+            questions={"ques_count": 1, "ques1": "反演外延层厚度。"},
+            ques_count=1,
+        )
+
+        result = await ModelerAgent("truncated-modeler-task", llm).run(coordinator)
+
+        self.assertEqual(set(result.questions_solution), set(valid_plan))
+        calls = llm.chat.await_args_list
+        self.assertEqual(calls[0].kwargs["max_tokens"], 4096)
+        self.assertEqual(calls[1].kwargs["max_tokens"], 16384)
+
     async def test_modeler_receives_data_verified_question_analysis(self) -> None:
         llm = MagicMock()
         llm.chat = AsyncMock(

@@ -2,6 +2,8 @@
 import { getApiConfigStatus, saveApiConfig } from "@/apis/apiKeyApi";
 import {
 	type ExecutionBackend,
+	explainModelingSubmissionFailure,
+	normalizeCompTemplate,
 	submitModelingTask,
 } from "@/apis/submitModelingApi";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -205,7 +207,7 @@ async function handleSubmit(): Promise<void> {
 		const request = {
 			ques_all: question.value,
 			user_requirements: userRequirements.value,
-			comp_template: selectedOptions.value.template,
+			comp_template: normalizeCompTemplate(selectedOptions.value.template),
 			format_output: "LaTeX",
 			execution_backend: executionBackend.value,
 		};
@@ -223,7 +225,7 @@ async function handleSubmit(): Promise<void> {
 		console.error("任务提交失败:", error);
 		toast({
 			title: "任务提交失败",
-			description: "请检查 API Key 是否正确",
+			description: explainModelingSubmissionFailure(error),
 			variant: "destructive",
 		});
 	} finally {

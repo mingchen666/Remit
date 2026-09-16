@@ -187,6 +187,115 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("solve:eda", saved["revision_feedback"])
             self.assertEqual(saved["approval_history"][-1]["decision"], "approve")
 
+    async def test_incomplete_revision_uses_focused_repair_prompt(self):
+        """未完成节点续跑时应先修磁盘产物，不得重新执行完整探索任务。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = WorkflowCheckpoint(root)
+            state = _planning_state(checkpoint)
+            workflow = RemitWorkFlow()
+            workflow.task_id = "revision-execution"
+            workflow.work_dir = tmp
+            workflow.checkpoint = checkpoint
+            workflow.code_interpreter = SimpleNamespace(get_code_output=lambda _: "")
+            root.joinpath("cleaned_spectra.csv").write_text(
+                "x\n1\n", encoding="utf-8"
+            )
+            report = {
+                "status": "pass",
+                "problem_type": "错误类型",
+                "selected_model": "cleaning_rule",
+                "candidate_models": [],
+                "robustness_checks": [
+                    {"name": "row reconciliation", "passed": True}
+                ],
+                "artifacts": ["cleaned_spectra.csv"],
+                "paper_ready_images": [],
+                "type_specific": {
+                    "raw_rows": 100,
+                    "cleaned_rows": 90,
+                    "missingness_checked": True,
+                    "duplicates_checked": True,
+                    "outliers_assessed": True,
+                    "independent_unit_identified": True,
+                },
+            }
+            report_path = root / "eda_quality_report.json"
+            checkpoint.start_node(state, "solve:eda")
+            pending = checkpoint.request_approval(
+                state,
+                "solve:eda",
+                summary="缺少 eda_quality_report.json",
+                artifacts=["cleaned_spectra.csv"],
+                allow_incomplete=True,
+            )
+            state = checkpoint.request_revision(
+                state,
+                pending["checkpoint_id"],
+                "只把 problem_type 修复为 eda。",
+            )
+
+            async def repair_code(**_kwargs):
+                report["problem_type"] = "eda"
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+                return CoderToWriter(code_response="已增量补齐质量报告")
+
+            coder = SimpleNamespace(run=AsyncMock(side_effect=repair_code))
+            modeler = SimpleNamespace(
+                review_execution_result=AsyncMock(
+                    return_value=ModelExecutionReview(
+                        verdict="accept",
+                        summary="现有数据清洗证据完整，质量报告与落盘产物已经通过复核。",
+                        evidence=["质量报告通过"],
+                        strengths=["复用了已落盘证据"],
+                        weaknesses=[],
+                        writer_guidance="如实报告已执行的清洗规则、核验结果和局限。",
+                    )
+                )
+            )
+            writer = SimpleNamespace(
+                run=AsyncMock(
+                    return_value=WriterResponse(response_content="清洗结果已核验。")
+                )
+            )
+            flows = MagicMock()
+            flows.get_writer_prompt.return_value = "根据执行结果撰写EDA"
+            value = {
+                "contract": build_stage_contract("eda"),
+                "question_text": "数据清洗与探索性分析",
+                "model_plan": "clean data",
+                "coder_prompt": "从头执行完整数据清洗与探索",
+            }
+
+            with (
+                patch.object(settings, "HIL_ENABLED", False),
+                patch.object(
+                    workflow_module.redis_manager, "publish_message", new=AsyncMock()
+                ),
+                patch.object(workflow_module, "validate_writer_section"),
+            ):
+                await workflow._solution_node(
+                    key="eda",
+                    value=value,
+                    state=state,
+                    flows=flows,
+                    config_template={},
+                    modeler_agent=modeler,
+                    coder_agent=coder,
+                    writer_agent=writer,
+                    user_output=UserOutput(tmp, 1),
+                )
+
+            repair_prompt = coder.run.await_args.kwargs["prompt"]
+            self.assertTrue(repair_prompt.startswith("【断点返修模式"))
+            self.assertIn("只把 problem_type 修复为 eda", repair_prompt)
+            self.assertNotIn("从头执行完整数据清洗与探索", repair_prompt)
+            self.assertIn("第一次 execute_code", repair_prompt)
+            self.assertEqual(
+                coder.run.await_args.kwargs["max_code_executions"], 2
+            )
+            coder.run.assert_awaited_once()
+
     async def test_pilot_selection_reaches_solver_without_an_approval_restart(self):
         for hil_enabled, pilot_fails in ((False, False), (True, False), (False, True)):
             with self.subTest(hil_enabled=hil_enabled, pilot_fails=pilot_fails):

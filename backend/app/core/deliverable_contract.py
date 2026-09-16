@@ -80,6 +80,7 @@ _PREDICTIVE_PROBLEM_TYPES = frozenset(
 )
 _MODEL_QUALITY_PROBLEM_TYPES = frozenset(
     {
+        "analysis",
         "regression",
         "classification",
         "system_identification",
@@ -204,6 +205,10 @@ class QuestionDeliverableContract:
 
 `{self.quality_filename}` 的 `type_specific` 还必须包含：
 `raw_rows, cleaned_rows, missingness_checked, duplicates_checked, outliers_assessed, independent_unit_identified`。
+`raw_rows` 和 `cleaned_rows` 为正整数，且 cleaned_rows 不大于 raw_rows。
+后四项是检查标记：已完成填 JSON 布尔值 `true`，未完成填 `false`；不适用时只能填字符串 `"not_applicable"` 并在 limitations 中说明原因。
+`independent_unit_identified` 不得填写说明文字、数字、数组或对象；独立单位的具体说明放在顶层 `independent_unit` 字段。
+不得为了通过格式校验将未完成的检查改成 true，也不得将 manual_review 改成 pass。
 数据驱动题六项必须真实完成；机理题可将不适用项说明为 `not_applicable`，但必须完成量纲和物理一致性检查并写入 `robustness_checks`。
 """
             )
@@ -301,7 +306,9 @@ class QuestionDeliverableContract:
             + """
 
 质量报告的 `type_specific` 必须包含：
-`evidence_checks, uncertainty_reported, effect_size_reported`。至少两项独立证据检查，并报告不确定性和效应量。
+`evidence_checks, uncertainty_reported, effect_size_reported`。
+- `evidence_checks` 必须是已完成独立证据检查数量的 JSON 数字（至少 2），不得写数组或对象；检查明细另存 `evidence_checks_detail`。
+- `uncertainty_reported` 和 `effect_size_reported` 必须是 JSON 布尔值 `true`，不得写对象；具体数值明细可分别另存 `uncertainty` 和 `effect_size`。
 """
         )
 
@@ -843,8 +850,24 @@ def _validate_type_specific(
                 "outliers_assessed",
                 "independent_unit_identified",
             )
-            if not all(values.get(key) in {True, "not_applicable"} for key in flags):
-                raise DeliverableValidationError("EDA 必需检查未完整执行")
+            invalid = [
+                key for key in flags
+                if not (
+                    values.get(key) is True
+                    or (
+                        isinstance(values.get(key), str)
+                        and values.get(key) == "not_applicable"
+                    )
+                )
+            ]
+            if invalid:
+                fields = "、".join(f"type_specific.{key}" for key in invalid)
+                raise DeliverableValidationError(
+                    f"EDA 必需检查未完整执行或类型错误：{fields}；"
+                    '已完成必须填 JSON 布尔值 true，不适用填 "not_applicable" 并说明原因；'
+                    "未完成请先执行检查。独立单位说明应放在顶层 independent_unit，"
+                    "不要填入 independent_unit_identified；保留真实审核状态。"
+                )
 
         checks = [check_rows, check_eda_flags]
     elif problem_type == "sensitivity":
@@ -1916,8 +1939,9 @@ def build_repair_prompt(
 - 已存在的必需文件：{", ".join(existing) if existing else "无"}
 - 本次必须一次性补齐的文件：{", ".join(missing) if missing else "无"}
 - 可复用的真实中间产物：{", ".join(reusable) if reusable else "无"}
-先读取并核对已有 CSV/MAT/JSON 中的真实结果。已有证据足够时禁止无意义地重跑耗时模型；
-但不得臆造、手填或篡改指标。最后一次 execute_code 必须生成全部缺失文件，逐个读取验证并打印检查结果。
+不要枚举目录、统计文件数量或重新探索原始数据。第一次 execute_code 只读取报错直接涉及的最少文件，
+并在同一次执行中生成或修复全部缺失文件；第二次 execute_code（如确有必要）只能回读校验。
+已有证据足够时禁止重跑耗时模型，但不得臆造、手填或篡改指标。完成门禁修复后立即停止调用工具。
 """.strip()
     return f"""
 上一次输出未通过强制质量门禁：{error}

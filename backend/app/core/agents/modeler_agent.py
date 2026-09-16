@@ -5,6 +5,11 @@ from pydantic import ValidationError
 from app.core.agents.agent import Agent
 from app.core.json_recovery import decode_json_object
 from app.core.prompts.modeler import MODELER_PROMPT
+from app.core.structured_output import (
+    configured_output_budget,
+    expanded_output_budget,
+    response_was_truncated,
+)
 from app.schemas.A2A import (
     CoordinatorToModeler,
     MethodCard,
@@ -185,16 +190,49 @@ class ModelerAgent(Agent):
 
         expected_keys = _expected_model_plan_keys(coordinator_to_modeler.questions)
         last_error = "未知格式错误"
+        output_budget = configured_output_budget(self.model)
         for attempt in range(1, 4):
             response = await self._chat(
-                history=self.chat_history, agent_name=type(self).__name__
+                history=self.chat_history,
+                agent_name=type(self).__name__,
+                max_tokens=output_budget,
             )
+            if response_was_truncated(response, output_budget):
+                last_error = (
+                    "供应商在输出上限处截断总体方案："
+                    f"finish_reason={response.finish_reason or 'unknown'}, "
+                    f"completion_tokens={response.usage.completion_tokens}, "
+                    f"budget={output_budget}, "
+                    f"content_chars={len(response.content or '')}"
+                )
+                next_budget = expanded_output_budget(output_budget)
+                logger.warning(
+                    f"总体建模方案输出被截断 (第{attempt}/3次): {last_error}；"
+                    f"下次预算={next_budget}"
+                )
+                if attempt >= 3:
+                    raise ValueError(
+                        "总体建模方案连续 3 次达到输出上限；"
+                        "请改用支持更大输出的模型或减少方案篇幅"
+                    )
+                output_budget = next_budget
+                await self.append_chat_history(
+                    {
+                        "role": "system",
+                        "content": (
+                            "上次总体方案因输出上限被截断。请压缩解释性文字，"
+                            f"但必须完整保留这些键：{expected_keys}，"
+                            "一次性重发闭合的单层 JSON。"
+                        ),
+                    }
+                )
+                continue
             raw_plan = response.content or ""
-            if not raw_plan:
-                raise ValueError("返回的 JSON 字符串为空，请检查输入内容。")
 
-            questions_solution = repair_json(raw_plan)
             try:
+                if not raw_plan:
+                    raise ValueError("返回的 JSON 字符串为空")
+                questions_solution = repair_json(raw_plan)
                 if not questions_solution:
                     raise ValueError("返回内容不是有效 JSON 对象")
                 normalized = _normalize_model_plan(
