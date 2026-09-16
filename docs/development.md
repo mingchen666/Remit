@@ -42,6 +42,24 @@ backend/.venv/bin/python -m pytest tests -q
 On Windows, replace the final interpreter path with
 `backend\.venv\Scripts\python.exe`.
 
+## Windows desktop shell
+
+`tools/desktop_app.py` runs the same three services behind a WebView2 window with
+a tray icon. On Windows, start it through the hidden launcher and create the
+desktop shortcut that uses it with:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\create_desktop_shortcut.ps1
+```
+
+Do not point a shortcut straight at `backend\.venv\Scripts\pythonw.exe`. uv builds
+that venv trampoline as a console-subsystem executable, so launching it allocates
+a console; when Windows Terminal is the default terminal application, Windows
+hands that console to Windows Terminal, which ignores the hidden flag and leaves
+an empty terminal window on the desktop. `tools\start_desktop.vbs` runs under
+`wscript.exe` (a GUI-subsystem host) and starts the shell with a hidden window
+style, which keeps that console invisible.
+
 ## Continuous integration
 
 The CI workflow runs:
