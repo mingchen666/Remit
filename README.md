@@ -236,10 +236,10 @@ Remit 面向可信的单用户本机环境，不具备公网多租户服务所�
 **Remit（数模 Agent）**。欢迎分享建议、问题和实际使用体验。
 
 <p align="center">
-  <a href="./assets/remit-wechat-group.png?v=20260907">
-    <img src="./assets/remit-wechat-group.png?v=20260907" alt="Remit 数模 Agent 微信交流群二维码，2026 年 9 月 14 日前有效" width="360" />
+  <a href="./assets/remit-wechat-group.png?v=20260916">
+    <img src="./assets/remit-wechat-group.png?v=20260916" alt="Remit 数模 Agent 微信交流群二维码，2026 年 9 月 23 日前有效" width="360" />
   </a>
 </p>
 
-> 二维码更新于 2026 年 9 月 7 日，当前图片标注为 9 月 14 日前有效。点击图片可查看原图；
+> 二维码更新于 2026 年 9 月 16 日，当前图片标注为 9 月 23 日前有效。点击图片可查看原图；
 > 如二维码失效，可提交 Issue 提醒更新。

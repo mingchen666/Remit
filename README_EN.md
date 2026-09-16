@@ -192,11 +192,11 @@ Scan the QR code to join the **Remit (数模 Agent)** WeChat group for usage
 questions, mathematical modeling workflows, feedback, and development discussion.
 
 <p align="center">
-  <a href="./assets/remit-wechat-group.png?v=20260907">
-    <img src="./assets/remit-wechat-group.png?v=20260907" alt="Remit WeChat group QR code, valid before September 14, 2026" width="360" />
+  <a href="./assets/remit-wechat-group.png?v=20260916">
+    <img src="./assets/remit-wechat-group.png?v=20260916" alt="Remit WeChat group QR code, valid before September 23, 2026" width="360" />
   </a>
 </p>
 
-> Updated September 7, 2026. The image states that the QR code is valid before
-> September 14. Click the image for full resolution; if it expires, open an issue
+> Updated September 16, 2026. The image states that the QR code is valid before
+> September 23. Click the image for full resolution; if it expires, open an issue
 > to request an update.
