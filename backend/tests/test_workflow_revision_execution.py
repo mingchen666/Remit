@@ -198,17 +198,13 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             workflow.work_dir = tmp
             workflow.checkpoint = checkpoint
             workflow.code_interpreter = SimpleNamespace(get_code_output=lambda _: "")
-            root.joinpath("cleaned_spectra.csv").write_text(
-                "x\n1\n", encoding="utf-8"
-            )
+            root.joinpath("cleaned_spectra.csv").write_text("x\n1\n", encoding="utf-8")
             report = {
                 "status": "pass",
                 "problem_type": "错误类型",
                 "selected_model": "cleaning_rule",
                 "candidate_models": [],
-                "robustness_checks": [
-                    {"name": "row reconciliation", "passed": True}
-                ],
+                "robustness_checks": [{"name": "row reconciliation", "passed": True}],
                 "artifacts": ["cleaned_spectra.csv"],
                 "paper_ready_images": [],
                 "type_specific": {
@@ -291,9 +287,7 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("只把 problem_type 修复为 eda", repair_prompt)
             self.assertNotIn("从头执行完整数据清洗与探索", repair_prompt)
             self.assertIn("第一次 execute_code", repair_prompt)
-            self.assertEqual(
-                coder.run.await_args.kwargs["max_code_executions"], 2
-            )
+            self.assertEqual(coder.run.await_args.kwargs["max_code_executions"], 2)
             coder.run.assert_awaited_once()
 
     async def test_pilot_selection_reaches_solver_without_an_approval_restart(self):

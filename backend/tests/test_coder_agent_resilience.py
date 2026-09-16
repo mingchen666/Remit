@@ -56,14 +56,28 @@ def _make_agent(
 
 class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_tool_arguments_have_bounded_retries(self) -> None:
-        for arguments in ('{}', '[]', '{', '{"code":null}', '{"code":42}', '{"code":" "}'):
+        for arguments in (
+            "{}",
+            "[]",
+            "{",
+            '{"code":null}',
+            '{"code":42}',
+            '{"code":" "}',
+        ):
             with self.subTest(arguments=arguments):
                 agent = _make_agent()
                 agent._inject_user_notes = AsyncMock()
-                agent._chat = AsyncMock(return_value=StandardResponse(tool_calls=[
-                    ToolCall(id="bad", name="execute_code", arguments=arguments)
-                ]))
-                with patch("app.core.agents.coder_agent.redis_manager.publish_message", new=AsyncMock()):
+                agent._chat = AsyncMock(
+                    return_value=StandardResponse(
+                        tool_calls=[
+                            ToolCall(id="bad", name="execute_code", arguments=arguments)
+                        ]
+                    )
+                )
+                with patch(
+                    "app.core.agents.coder_agent.redis_manager.publish_message",
+                    new=AsyncMock(),
+                ):
                     with self.assertRaisesRegex(CoderAgentRunError, "连续 3 次"):
                         await agent.run("eda", "eda")
                 self.assertEqual(agent._chat.await_count, 3)
@@ -74,15 +88,22 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
         agent = _make_agent()
         agent.model.max_tokens = 4096
         agent._inject_user_notes = AsyncMock()
-        agent._chat = AsyncMock(side_effect=[
-            StandardResponse(finish_reason="max_tokens", tool_calls=[
-                ToolCall(id="bad", name="execute_code", arguments="{}")
-            ]),
-            _tool_response("good", "print(1)"),
-            StandardResponse(content="done"),
-        ])
+        agent._chat = AsyncMock(
+            side_effect=[
+                StandardResponse(
+                    finish_reason="max_tokens",
+                    tool_calls=[
+                        ToolCall(id="bad", name="execute_code", arguments="{}")
+                    ],
+                ),
+                _tool_response("good", "print(1)"),
+                StandardResponse(content="done"),
+            ]
+        )
         agent.code_interpreter.execute_code.return_value = ("1", False, "")
-        with patch("app.core.agents.coder_agent.redis_manager.publish_message", new=AsyncMock()):
+        with patch(
+            "app.core.agents.coder_agent.redis_manager.publish_message", new=AsyncMock()
+        ):
             result = await agent.run("eda", "eda")
         self.assertEqual(result.code_response, "done")
         agent.code_interpreter.execute_code.assert_awaited_once_with("print(1)")
@@ -174,7 +195,9 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.code_response, "first")
         self.assertEqual(second.code_response, "second")
 
-    async def test_execution_budget_forces_summary_without_an_extra_tool_call(self) -> None:
+    async def test_execution_budget_forces_summary_without_an_extra_tool_call(
+        self,
+    ) -> None:
         agent = _make_agent(max_code_executions=2, max_chat_turns=10)
         calls = 0
 

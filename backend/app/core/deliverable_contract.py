@@ -851,7 +851,8 @@ def _validate_type_specific(
                 "independent_unit_identified",
             )
             invalid = [
-                key for key in flags
+                key
+                for key in flags
                 if not (
                     values.get(key) is True
                     or (

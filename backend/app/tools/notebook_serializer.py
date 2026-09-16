@@ -46,9 +46,7 @@ class NotebookSerializer:
         if not notebook_path.is_file():
             return
         if notebook_path.stat().st_size > MAX_NOTEBOOK_BYTES:
-            raise ValueError(
-                f"已有 notebook 超过 {MAX_NOTEBOOK_BYTES} 字节，拒绝覆盖"
-            )
+            raise ValueError(f"已有 notebook 超过 {MAX_NOTEBOOK_BYTES} 字节，拒绝覆盖")
         try:
             loaded = nbformat.reads(
                 notebook_path.read_text(encoding="utf-8"),

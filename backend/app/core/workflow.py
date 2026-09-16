@@ -1412,9 +1412,7 @@ class RemitWorkFlow(WorkFlow):
                 and item.get("decision") == "revise"
                 and item.get("allow_incomplete") is True
                 and str(
-                    item.get("revision_target_node_id")
-                    or item.get("node_id")
-                    or ""
+                    item.get("revision_target_node_id") or item.get("node_id") or ""
                 )
                 == node_id
                 for item in reversed(state.get("approval_history", []))

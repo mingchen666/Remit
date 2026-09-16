@@ -189,10 +189,7 @@ class ModelRevisionPlan(BaseModel):
             name
             for name in exact_names
             if selected.casefold().startswith(name.casefold())
-            and (
-                len(selected) == len(name)
-                or selected[len(name)] in "，,；;、 /+（("
-            )
+            and (len(selected) == len(name) or selected[len(name)] in "，,；;、 /+（(")
         ]
         if len(prefixed) != 1:
             return data

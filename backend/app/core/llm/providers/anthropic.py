@@ -98,17 +98,14 @@ class AnthropicProvider(BaseProvider):
                     "tool_use_id": msg.get("tool_call_id", ""),
                     "content": msg.get("content", ""),
                 }
-                previous_content = (
-                    converted[-1].get("content") if converted else None
-                )
+                previous_content = converted[-1].get("content") if converted else None
                 if (
                     converted
                     and converted[-1].get("role") == "user"
                     and isinstance(previous_content, list)
                     and previous_content
                     and all(
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_result"
+                        isinstance(block, dict) and block.get("type") == "tool_result"
                         for block in previous_content
                     )
                 ):
@@ -118,9 +115,7 @@ class AnthropicProvider(BaseProvider):
                     # Provider 边界需要在发送前把连续结果合并成一个内容块列表。
                     previous_content.append(result_block)
                 else:
-                    converted.append(
-                        {"role": "user", "content": [result_block]}
-                    )
+                    converted.append({"role": "user", "content": [result_block]})
                 continue
 
             converted.append(

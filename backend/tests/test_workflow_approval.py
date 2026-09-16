@@ -139,9 +139,7 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
                 persisted["pending_approval"]["checkpoint_id"],
                 paused.exception.approval["checkpoint_id"],
             )
-            self.assertTrue(
-                persisted["pending_approval"]["allow_incomplete"]
-            )
+            self.assertTrue(persisted["pending_approval"]["allow_incomplete"])
 
     def test_resume_releases_historical_approval_when_hil_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -254,9 +252,7 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
             checkpoint = WorkflowCheckpoint(root)
             state = checkpoint.initialize(self._problem())
             self._completed_node(checkpoint, state)
-            state["modeler_response"] = {
-                "questions_solution": {"ques1": "回归"}
-            }
+            state["modeler_response"] = {"questions_solution": {"ques1": "回归"}}
             checkpoint.complete_node(state, "modeler")
             checkpoint.start_node(state, "solve:eda")
             report_path = root / "eda_quality_report.json"

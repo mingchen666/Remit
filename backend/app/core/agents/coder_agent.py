@@ -175,9 +175,7 @@ class CoderAgent(Agent):
             outcome = await self._handle_tool_call(response, interpreter)
             if outcome == "ok":
                 retry_count, last_error, last_source = 0, "", ""
-                remaining_executions = (
-                    execution_limit - self.current_code_executions
-                )
+                remaining_executions = execution_limit - self.current_code_executions
                 if 0 < remaining_executions <= 2:
                     # 不能等预算归零后才要求总结：质量报告等契约文件必须由
                     # execute_code 真正落盘。提前保留最后一到两次调用，让模型
@@ -267,9 +265,7 @@ class CoderAgent(Agent):
             SystemMessage(content=content, type=level),  # type: ignore[arg-type]
         )
 
-    async def _call_model(
-        self, tools: list[dict], tool_choice: str = "auto"
-    ) -> Any:
+    async def _call_model(self, tools: list[dict], tool_choice: str = "auto") -> Any:
         """只返回完整且可执行的响应，协议重试最多三次。"""
         budget = configured_output_budget(self.model)
         for attempt in range(3):
@@ -302,22 +298,32 @@ class CoderAgent(Agent):
                     f"代码手连续 3 次响应不完整或参数无效：{error}；可从当前节点续跑"
                 )
             # 不把不完整工具调用放入历史，避免悬空 tool_call 或执行半段代码。
-            await self.append_chat_history({
-                "role": "user",
-                "content": (
-                    f"上次响应未执行：{error}。请缩短输出并完整重发。"
-                    + ('只调用一次 execute_code，参数为含非空字符串 code 的 JSON 对象。'
-                       if tools else "工具已禁用，请基于已有结果给出完整总结。")
-                ),
-            })
-            await publish_activity(self.task_id, "模型响应不完整，正在重新生成", category="repair")
+            await self.append_chat_history(
+                {
+                    "role": "user",
+                    "content": (
+                        f"上次响应未执行：{error}。请缩短输出并完整重发。"
+                        + (
+                            "只调用一次 execute_code，参数为含非空字符串 code 的 JSON 对象。"
+                            if tools
+                            else "工具已禁用，请基于已有结果给出完整总结。"
+                        )
+                    ),
+                }
+            )
+            await publish_activity(
+                self.task_id, "模型响应不完整，正在重新生成", category="repair"
+            )
 
     @staticmethod
     def _validated_code(tool_call: Any) -> str:
         """校验不可信工具参数，避免缺字段或错误类型进入执行器。"""
         if tool_call.name != "execute_code":
             raise ValueError("只允许 execute_code 工具")
-        if not isinstance(tool_call.arguments, str) or len(tool_call.arguments) > 1_000_000:
+        if (
+            not isinstance(tool_call.arguments, str)
+            or len(tool_call.arguments) > 1_000_000
+        ):
             raise ValueError("工具参数必须为不超过 1000000 字符的 JSON 字符串")
         try:
             arguments = json.loads(tool_call.arguments)
@@ -336,8 +342,7 @@ class CoderAgent(Agent):
     ) -> CoderToWriter:
         """达到执行上限后，基于已有结果完成总结而不再运行代码。"""
         logger.warning(
-            f"代码执行已达到本轮上限 {execution_limit}，"
-            "禁用工具并要求模型收口"
+            f"代码执行已达到本轮上限 {execution_limit}，禁用工具并要求模型收口"
         )
         await self._inject_user_notes()
         await self.append_chat_history(
